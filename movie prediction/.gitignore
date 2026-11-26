@@ -1,4 +1,4 @@
 TMDB_movie_dataset_v11.csv
 .ipynb_checkpoints/
-*.pkl
 *.joblib
+movie_env/
