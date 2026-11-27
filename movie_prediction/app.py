@@ -281,6 +281,10 @@ model, scaler = art["model"], art["scaler"]
 importance = art["feature_important"]            # ordered exactly like the columns the scaler/model were trained on
 FEATURES = list(importance.keys())
 HIT_IDX = list(art["label_classes"]).index("hit")
+# Decision threshold. A fixed 0.5 is wrong for this model (see retrain_cell.py): the tuned XGBoost is so
+# under-trained that its probabilities hug the base rate (~0.57). Use the saved threshold if the pkl has one,
+# otherwise fall back to the dataset's hit share (10800 hits / 18792 movies).
+THRESH = float(art.get("threshold", 10800 / 18792))
 
 
 def options_for(group):
@@ -304,6 +308,8 @@ def build_row(vals):
     lang_key = f"original_language_{vals['language']}"
     if lang_key in row:
         row[lang_key] = 1.0
+    elif "original_language_others" in row and vals["language"] == "others":
+        row["original_language_others"] = 1.0
     for g in GROUPS:
         picked = vals[g]
         for v in picked:
@@ -315,8 +321,10 @@ def build_row(vals):
 
 
 def hit_probability(row):
+    """Raw model probability, re-centred so THRESH maps to 50% (so >50% = hit, <50% = flop everywhere in the app)."""
     X = pd.DataFrame([row])[FEATURES]
-    return float(model.predict_proba(scaler.transform(X))[0][HIT_IDX])
+    p = float(model.predict_proba(scaler.transform(X))[0][HIT_IDX])
+    return 0.5 * p / THRESH if p < THRESH else 0.5 + 0.5 * (p - THRESH) / (1 - THRESH)
 
 
 def style(fig, title, h=320):
@@ -367,6 +375,16 @@ def page_form():
                     picks[g] = []
             submitted = st.form_submit_button("🎬 PREDICT!", type="primary")
         if submitted:
+            problems = []
+            if vote_average <= 0:
+                problems.append("Audience rating is 0.00. Set the rating on the slider (this is very important for the model)")
+            if not picks.get("genres"):
+                problems.append("Select genres (at least one).")
+            if not any(picks.get(g) for g in GROUPS):
+                problems.append("All movie details are empty. Fill in a few fields under genres, company, country, language, and keywords.")
+            if problems:
+                st.error("Fix these before making a prediction:\n\n" + "\n".join(f"- {m}" for m in problems))
+                st.stop()
             ss.inputs = dict(vote_average=vote_average, release=release, language=language, **picks)
             ss.hit_p = hit_probability(build_row(make_vals(ss.inputs)))
             ss.revealed = False
